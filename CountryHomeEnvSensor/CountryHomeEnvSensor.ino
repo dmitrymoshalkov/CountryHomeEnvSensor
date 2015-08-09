@@ -16,87 +16,156 @@
 // See         ReadMe.txt for references
 //
 
-
-// Core library for code-sense - IDE-based
-#if defined(WIRING) // Wiring specific
-#include "Wiring.h"
-#elif defined(MAPLE_IDE) // Maple specific
-#include "WProgram.h"
-#elif defined(MPIDE) // chipKIT specific
-#include "WProgram.h"
-#elif defined(DIGISPARK) // Digispark specific
 #include "Arduino.h"
-#elif defined(ENERGIA) // LaunchPad specific
-#include "Energia.h"
-#elif defined(LITTLEROBOTFRIENDS) // LittleRobotFriends specific
-#include "LRF.h"
-#elif defined(MICRODUINO) // Microduino specific
-#include "Arduino.h"
-#elif defined(SPARK) || defined(PARTICLE) // Particle / Spark specific
-#include "application.h"
-#elif defined(TEENSYDUINO) // Teensy specific
-#include "Arduino.h"
-#elif defined(REDBEARLAB) // RedBearLab specific
-#include "Arduino.h"
-#elif defined(ESP8266) // ESP8266 specific
-#include "Arduino.h"
-#elif defined(ARDUINO) // Arduino 1.0 and 1.5 specific
-#include "Arduino.h"
-#else // error
-#error Platform not defined
-#endif // end IDE
-
-// Include application, user and local libraries
+#include <SPI.h>
+#include <DHT.h>
+#include <BH1750.h>
+#include <MySensor.h>
 
 
-// Define variables and constants
-//
-// Brief	Name of the LED
-// Details	Each board has a LED but connected to a different pin
-//
-uint8_t myLED;
+#define NODE_ID 5
+
+#define CHILD_ID_EXT_HUM 3  //AM2302
+#define CHILD_ID_EXT_TEMP 4
+#define HUMIDITY_SENSOR_DIGITAL_PIN 3
+#define CHILD_ID_LIGHT 2
+
+int samplingTime = 280;
+uint16_t lastlux;
+boolean metric = true;          // Celcius or fahrenheid
+float lastTemp = -1;
+float lastHum = -1;
+long previousLighttMillis = 0;        // last time the sensors are updated
+long LightsensorInterval = 30000;     // interval at which we will take a measurement ( 30 seconds)
+long previousDHTMillis = 0;        // last time the sensors are updated
+long DHTsensorInterval = 120000;     // interval at which we will take a measurement ( 30 seconds)
 
 
-//
-// Brief	Setup
-// Details	Define the pin the LED is connected to
-//
-// Add setup code
-void setup() {
-    // myLED pin number
-#if defined(ENERGIA) // All LaunchPads supported by Energia
-    myLED = RED_LED;
-#elif defined(DIGISPARK) // Digispark specific
-    myLED = 1; // assuming model A
-#elif defined(MAPLE_IDE) // Maple specific
-    myLED = BOARD_LED_PIN;
-#elif defined(WIRING) // Wiring specific
-    myLED = 15;
-#elif defined(LITTLEROBOTFRIENDS) // LittleRobotFriends specific
-    myLED = 10;
-#elif defined(PANSTAMP_AVR) // panStamp AVR specific
-    myLED = 7;
-#elif defined(PANSTAMP_NRG) // panStamp NRG specific
-    myLED = ONBOARD_LED;
-#elif defined(SPARK) || defined(PARTICLE) // Particle / Spark specific
-    myLED = D7;
-#elif defined(ESP8266) // ESP8266 specific
-    myLED = 2;
-#else // Arduino, chipKIT, Teensy specific
-    myLED = 13;
-#endif
+DHT dht;
+BH1750 lightSensor;
+
+
+MySensor gw;
+
+MyMessage LightMsg(CHILD_ID_LIGHT, V_LIGHT_LEVEL);
+MyMessage msgExtHum(CHILD_ID_EXT_HUM, V_HUM);
+MyMessage msgExtTemp(CHILD_ID_EXT_TEMP, V_TEMP);
+
+void setup()
+{
+      Serial.begin(115200);
+    Serial.println("Begin setup");
+    // Initialize library and add callback for incoming messages
+    gw.begin(NULL, NODE_ID, false);
     
-    pinMode(myLED, OUTPUT);
+    // Send the sketch version information to the gateway and Controller
+    gw.sendSketchInfo("Country home env sensor", "1.0");
+    
+
+    
+    // Register all sensors to gateway (they will be created as child devices)
+
+    gw.present(CHILD_ID_LIGHT, S_LIGHT_LEVEL);
+    gw.present(CHILD_ID_EXT_HUM, S_HUM);
+    gw.present(CHILD_ID_EXT_TEMP, S_TEMP);
+    
+    
+    dht.setup(HUMIDITY_SENSOR_DIGITAL_PIN);
+    
+    metric = gw.getConfig().isMetric;
+    
+    lightSensor.begin();
+    
+    
+    //Enable watchdog timer
+        wdt_enable(WDTO_8S);
+    
+    Serial.println("End setup");  
 }
 
-//
-// Brief	Loop
-// Details	Blink the LED
-//
-// Add loop code
-void loop() {
-    digitalWrite(myLED, HIGH);
-    delay(500);
-    digitalWrite(myLED, LOW);
-    delay(500);
+
+
+
+
+void checkLight()
+{
+    
+    unsigned long currentLightMillis = millis();
+    if(currentLightMillis - previousLighttMillis > LightsensorInterval) {
+        // Save the current millis
+        previousLighttMillis = currentLightMillis;
+        // take action here:
+        // uint16_t lux = lightSensor.GetLightIntensity();
+        uint16_t lux = lightSensor.readLightLevel();// Get Lux value
+        Serial.print("Light: ");
+        Serial.println(lux);
+        if (lux != lastlux) {
+            gw.send(LightMsg.set(lux));
+            lastlux = lux;
+        } 
+        
+        
+    }    
+    
 }
+
+
+
+void checkHum()
+{
+    unsigned long currentDHTMillis = millis();
+    if(currentDHTMillis - previousDHTMillis > DHTsensorInterval) {
+        // Save the current millis
+        previousDHTMillis = currentDHTMillis;
+        // take action here:
+        
+        //DHT 2121
+        float temperature = dht.getTemperature();
+        if (isnan(temperature)) {
+            Serial.println("Failed reading temperature from DHT");
+        } else if (temperature != lastTemp) {
+            lastTemp = temperature;
+            if (!metric) {
+                temperature = dht.toFahrenheit(temperature);
+            }
+            gw.send(msgExtTemp.set(temperature, 1));
+            Serial.print("T: ");
+            Serial.println(temperature);
+        }
+        
+        float humidity = dht.getHumidity();
+        if (isnan(humidity)) {
+            Serial.println("Failed reading humidity from DHT");
+        } else if (humidity != lastHum) {
+            lastHum = humidity;
+            gw.send(msgExtHum.set(humidity, 1));
+            Serial.print("H: ");
+            Serial.println(humidity);
+        }
+        
+        // end dht21
+        
+        
+    }    
+    
+}
+
+
+
+void loop(){
+    
+    
+    checkHum();
+    
+    checkLight();
+    
+    
+    // Alway process incoming messages whenever possible
+    gw.process();
+    
+    //reset watchdog timer
+        wdt_reset();
+}
+
+
+
