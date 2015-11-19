@@ -29,6 +29,11 @@
 
 #define NODE_ID 5
 
+
+#define RADIO_RESET_DELAY_TIME 20 //Задержка между сообщениями
+#define MESSAGE_ACK_RETRY_COUNT 5  //количество попыток отсылки сообщения с запросом подтверждения
+
+
 #define CHILD_ID_EXT_HUM 3  //DHT22
 #define CHILD_ID_EXT_TEMP 4
 #define CHILD_ID_LIGHT 2
@@ -36,7 +41,11 @@
 #define CHILD_ID_OUT_TEMP 6
 #define CHILD_BARO 7
 #define CHILD_ID_DOOR 8
+
+
 #define REBOOT_CHILD_ID 100
+#define RECHECK_SENSOR_VALUES          102
+
 
 #define HUMIDITY_SENSOR_DIGITAL_PIN 3
 #define EXTHUMIDITY_SENSOR_DIGITAL_PIN 3
@@ -59,6 +68,17 @@ long PresssensorInterval = 120000;
 long previousPressMillis = 0;
 float lastPressure = -1;  
 int oldDebouncerState=-1;
+
+unsigned long previousMSMillis=0;
+unsigned long MSsensorInterval=60000;
+
+boolean boolMotionSensorDisabled = false;
+boolean boolRecheckSensorValues = false;
+
+
+boolean gotAck=false; //подтверждение от гейта о получении сообщения 
+int iCount = MESSAGE_ACK_RETRY_COUNT;
+
 
 DHT dht;
 BH1750 lightSensor;
@@ -117,6 +137,11 @@ void setup()
 
 //reboot sensor command
      gw.present(REBOOT_CHILD_ID, S_BINARY);  
+
+//reget sensor values
+  gw.present(RECHECK_SENSOR_VALUES, S_LIGHT); 
+        gw.wait(RADIO_RESET_DELAY_TIME);   
+
  
  // Send initial state of sensors to gateway  
   debouncer.update();
@@ -138,7 +163,7 @@ void checkLight()
 {
     
     unsigned long currentLightMillis = millis();
-    if(currentLightMillis - previousLighttMillis > LightsensorInterval) {
+    if(currentLightMillis - previousLighttMillis > LightsensorInterval || boolRecheckSensorValues) {
         // Save the current millis
         previousLighttMillis = currentLightMillis;
         // take action here:
@@ -161,7 +186,7 @@ void checkLight()
 void checkHum()
 {
     unsigned long currentDHTMillis = millis();
-    if(currentDHTMillis - previousDHTMillis > DHTsensorInterval) {
+    if(currentDHTMillis - previousDHTMillis > DHTsensorInterval || boolRecheckSensorValues) {
         // Save the current millis
         previousDHTMillis = currentDHTMillis;
         // take action here:
@@ -202,7 +227,7 @@ void checkPressure()
 {
 
 unsigned long currentPressMillis = millis();
-if(currentPressMillis - previousPressMillis > PresssensorInterval) {
+if(currentPressMillis - previousPressMillis > PresssensorInterval || boolRecheckSensorValues) {
     // Save the current millis 
 previousPressMillis = currentPressMillis;   
 
@@ -223,12 +248,21 @@ previousPressMillis = currentPressMillis;
 void incomingMessage(const MyMessage &message) {
   // We only expect one type of message from controller. But we better check anyway.
 
-Serial.println(message.sensor);
+
     if ( message.sensor == REBOOT_CHILD_ID ) {
              wdt_enable(WDTO_30MS);
               while(1) {};
 
      }
+
+    if ( message.sensor == RECHECK_SENSOR_VALUES ) {
+         
+         if (message.getBool() == true)
+         {
+            boolRecheckSensorValues = true;
+         }
+
+     }  
 
         return;      
 } 
@@ -241,7 +275,7 @@ void loop(){
   // Get the update value
   int value = debouncer.read();
  
-  if (value != oldDebouncerState) {
+  if (value != oldDebouncerState || boolRecheckSensorValues) {
      // Send in the new value
      gw.send(DoorMsg.set(value==HIGH ? 1 : 0));
      oldDebouncerState = value;
@@ -254,6 +288,12 @@ void loop(){
     checkLight();
     
       checkPressure();
+
+    if (boolRecheckSensorValues)
+      {
+       boolRecheckSensorValues = false;
+      }
+      
     // Alway process incoming messages whenever possible
     gw.process();
     
