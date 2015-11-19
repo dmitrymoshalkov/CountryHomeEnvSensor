@@ -16,52 +16,78 @@
 // See         ReadMe.txt for references
 //
 
-#include "Arduino.h"
+
+#include <avr/wdt.h>
 #include <SPI.h>
 #include <DHT.h>
+#include <Wire.h>
 #include <BH1750.h>
 #include <MySensor.h>
+#include <Adafruit_BMP085.h>
+#include <Bounce2.h>
 
 
 #define NODE_ID 5
 
-#define CHILD_ID_EXT_HUM 3  //AM2302
+#define CHILD_ID_EXT_HUM 3  //DHT22
 #define CHILD_ID_EXT_TEMP 4
-#define HUMIDITY_SENSOR_DIGITAL_PIN 3
 #define CHILD_ID_LIGHT 2
+#define CHILD_ID_OUT_HUM 5  //AM2301
+#define CHILD_ID_OUT_TEMP 6
+#define CHILD_BARO 7
+#define CHILD_ID_DOOR 8
+#define REBOOT_CHILD_ID 100
+
+#define HUMIDITY_SENSOR_DIGITAL_PIN 3
+#define EXTHUMIDITY_SENSOR_DIGITAL_PIN 3
+#define DOOR_SENSOR_DIGITAL_PIN 6
 
 int samplingTime = 280;
-uint16_t lastlux;
+uint16_t lastlux=10000;
 boolean metric = true;          // Celcius or fahrenheid
 float lastTemp = -1;
 float lastHum = -1;
 long previousLighttMillis = 0;        // last time the sensors are updated
-long LightsensorInterval = 30000;     // interval at which we will take a measurement ( 30 seconds)
+long LightsensorInterval = 60000;     // interval at which we will take a measurement ( 30 seconds)
 long previousDHTMillis = 0;        // last time the sensors are updated
 long DHTsensorInterval = 120000;     // interval at which we will take a measurement ( 30 seconds)
-
+long previousAM2301Millis = 0;        // last time the sensors are updated
+long AM2301sensorInterval = 120000;     // interval at which we will take a measurement ( 30 seconds)
+float lastAM2301Temp = -1;
+float lastAM2301Hum = -1;
+long PresssensorInterval = 120000;
+long previousPressMillis = 0;
+float lastPressure = -1;  
+int oldDebouncerState=-1;
 
 DHT dht;
 BH1750 lightSensor;
+Adafruit_BMP085 bmp = Adafruit_BMP085();      // Digital Pressure Sensor 
 
+Bounce debouncer = Bounce(); 
 
 MySensor gw;
 
 MyMessage LightMsg(CHILD_ID_LIGHT, V_LIGHT_LEVEL);
 MyMessage msgExtHum(CHILD_ID_EXT_HUM, V_HUM);
 MyMessage msgExtTemp(CHILD_ID_EXT_TEMP, V_TEMP);
+MyMessage pressureMsg(CHILD_BARO, V_PRESSURE);
+MyMessage DoorMsg(CHILD_ID_DOOR, V_TRIPPED);
 
 void setup()
 {
       Serial.begin(115200);
     Serial.println("Begin setup");
     // Initialize library and add callback for incoming messages
-    gw.begin(NULL, NODE_ID, false);
+    gw.begin(incomingMessage, NODE_ID, false);
     
     // Send the sketch version information to the gateway and Controller
     gw.sendSketchInfo("Country home env sensor", "1.0");
     
-
+ if (!bmp.begin()) {
+    //Serial.println("Could not find a valid BMP085 sensor, check wiring!");
+    while (1) { }
+  }  
     
     // Register all sensors to gateway (they will be created as child devices)
 
@@ -75,8 +101,29 @@ void setup()
     metric = gw.getConfig().isMetric;
     
     lightSensor.begin();
-    
-    
+  
+      gw.present(CHILD_BARO, S_BARO);  
+  
+    // Setup the button
+  pinMode(DOOR_SENSOR_DIGITAL_PIN,INPUT);
+  // Activate internal pull-up
+  digitalWrite(DOOR_SENSOR_DIGITAL_PIN,HIGH);
+  
+  // After setting up the button, setup debouncer
+  debouncer.attach(DOOR_SENSOR_DIGITAL_PIN);
+  debouncer.interval(5);
+ 
+   gw.present(CHILD_ID_DOOR, S_DOOR); 
+
+//reboot sensor command
+     gw.present(REBOOT_CHILD_ID, S_BINARY);  
+ 
+ // Send initial state of sensors to gateway  
+  debouncer.update();
+  int value = debouncer.read();
+  gw.send(DoorMsg.set(value==HIGH ? 1 : 0));  
+
+  
     //Enable watchdog timer
         wdt_enable(WDTO_8S);
     
@@ -151,15 +198,62 @@ void checkHum()
 }
 
 
+void checkPressure()
+{
+
+unsigned long currentPressMillis = millis();
+if(currentPressMillis - previousPressMillis > PresssensorInterval) {
+    // Save the current millis 
+previousPressMillis = currentPressMillis;   
+
+  float pressure = bmp.readSealevelPressure(146)/100; // 146 meters above sealevel
+   float temperature = bmp.readTemperature();     
+  if (pressure != lastPressure) {
+    gw.send(pressureMsg.set((pressure * 0.75006375541921), 0));
+    lastPressure = pressure;
+  }  
+
+  Serial.print("Pressure = ");
+  Serial.print((pressure * 0.75006375541921));
+  Serial.println(" mmHg");
+}  
+}
+
+
+void incomingMessage(const MyMessage &message) {
+  // We only expect one type of message from controller. But we better check anyway.
+
+Serial.println(message.sensor);
+    if ( message.sensor == REBOOT_CHILD_ID ) {
+             wdt_enable(WDTO_30MS);
+              while(1) {};
+
+     }
+
+        return;      
+} 
+
+
 
 void loop(){
-    
+   
+   debouncer.update();
+  // Get the update value
+  int value = debouncer.read();
+ 
+  if (value != oldDebouncerState) {
+     // Send in the new value
+     gw.send(DoorMsg.set(value==HIGH ? 1 : 0));
+     oldDebouncerState = value;
+         Serial.print("Door: ");
+        Serial.println(value);
+  } 
     
     checkHum();
     
     checkLight();
     
-    
+      checkPressure();
     // Alway process incoming messages whenever possible
     gw.process();
     
