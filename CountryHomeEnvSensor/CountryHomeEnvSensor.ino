@@ -103,6 +103,7 @@ void setup()
     
     // Send the sketch version information to the gateway and Controller
     gw.sendSketchInfo("Country home env sensor", "1.0");
+        gw.wait(RADIO_RESET_DELAY_TIME);         
     
  if (!bmp.begin()) {
     //Serial.println("Could not find a valid BMP085 sensor, check wiring!");
@@ -112,9 +113,13 @@ void setup()
     // Register all sensors to gateway (they will be created as child devices)
 
     gw.present(CHILD_ID_LIGHT, S_LIGHT_LEVEL);
+        gw.wait(RADIO_RESET_DELAY_TIME);     
+
     gw.present(CHILD_ID_EXT_HUM, S_HUM);
+        gw.wait(RADIO_RESET_DELAY_TIME);     
+
     gw.present(CHILD_ID_EXT_TEMP, S_TEMP);
-    
+        gw.wait(RADIO_RESET_DELAY_TIME);         
     
     dht.setup(HUMIDITY_SENSOR_DIGITAL_PIN);
     
@@ -123,7 +128,8 @@ void setup()
     lightSensor.begin();
   
       gw.present(CHILD_BARO, S_BARO);  
-  
+          gw.wait(RADIO_RESET_DELAY_TIME);     
+
     // Setup the button
   pinMode(DOOR_SENSOR_DIGITAL_PIN,INPUT);
   // Activate internal pull-up
@@ -134,9 +140,11 @@ void setup()
   debouncer.interval(5);
  
    gw.present(CHILD_ID_DOOR, S_DOOR); 
+        gw.wait(RADIO_RESET_DELAY_TIME);     
 
 //reboot sensor command
      gw.present(REBOOT_CHILD_ID, S_BINARY);  
+        gw.wait(RADIO_RESET_DELAY_TIME);     
 
 //reget sensor values
   gw.present(RECHECK_SENSOR_VALUES, S_LIGHT); 
@@ -147,7 +155,7 @@ void setup()
   debouncer.update();
   int value = debouncer.read();
   gw.send(DoorMsg.set(value==HIGH ? 1 : 0));  
-
+     
   
     //Enable watchdog timer
         wdt_enable(WDTO_8S);
@@ -246,7 +254,13 @@ previousPressMillis = currentPressMillis;
 
 
 void incomingMessage(const MyMessage &message) {
-  // We only expect one type of message from controller. But we better check anyway.
+
+
+  if (message.isAck())
+  {
+    gotAck = true;
+    return;
+  }
 
 
     if ( message.sensor == REBOOT_CHILD_ID ) {
@@ -276,8 +290,18 @@ void loop(){
   int value = debouncer.read();
  
   if (value != oldDebouncerState || boolRecheckSensorValues) {
-     // Send in the new value
-     gw.send(DoorMsg.set(value==HIGH ? 1 : 0));
+
+    //Отсылаем состояние сенсора с подтверждением получения
+    iCount = MESSAGE_ACK_RETRY_COUNT;
+
+    while( !gotAck && iCount > 0 )
+    {
+      gw.send(DoorMsg.set(value==HIGH ? 1 : 0), true);  // Send motion value to gw
+      gw.wait(RADIO_RESET_DELAY_TIME);
+      iCount--;
+    }
+    gotAck = false;
+
      oldDebouncerState = value;
          Serial.print("Door: ");
         Serial.println(value);
