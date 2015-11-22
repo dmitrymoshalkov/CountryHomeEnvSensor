@@ -179,7 +179,7 @@ void checkLight()
         uint16_t lux = lightSensor.readLightLevel();// Get Lux value
         Serial.print("Light: ");
         Serial.println(lux);
-        if (lux != lastlux) {
+        if (lux != lastlux || boolRecheckSensorValues) {
             gw.send(LightMsg.set(lux));
             lastlux = lux;
         } 
